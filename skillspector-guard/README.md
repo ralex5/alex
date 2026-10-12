@@ -8,6 +8,10 @@ or `curl|wget … | sh/bash` run.
 - HIGH/CRITICAL in prompt-injection / supply-chain / data-theft / malware categories:
   Claude Code → `permissionDecision: "ask"`; Codex → `"deny"` (Codex does not support "ask")
 - Scan failure / >100 s / no GitHub link: allow + "NO SE REVISÓ" warning
+- Slow scans keep running in the background and are cached for 24 h in
+  `~/.cache/skillspector-guard/`, so retrying the same command gets the real verdict
+
+Full step-by-step guide (Spanish): `Guia-SkillSpector-Guard.docx`.
 
 ## Install
 ```bash

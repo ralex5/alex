@@ -79,42 +79,52 @@ if ! command -v skillspector >/dev/null 2>&1; then
   emit_warn "⚠️ SkillSpector guard: skillspector no está instalado o no está en el PATH. NO SE REVISÓ: $(printf '%s' "$REPOS" | tr '\n' ' ')"
 fi
 
-# ---------- 3. Escanear (con límite de tiempo portable, sin depender de `timeout`) ----------
-TMPD="$(mktemp -d "${TMPDIR:-/tmp}/skillspector-guard.XXXXXX")"
-trap 'rm -rf "$TMPD"' EXIT
+# ---------- 3. Escanear, con caché y escaneo en segundo plano ----------
+# Si el escaneo no termina en SCAN_TIMEOUT s, NO se mata: sigue en segundo plano y
+# guarda el resultado en la caché. La próxima vez que corras el mismo comando, el
+# guardia ya tiene el veredicto (repos grandes pueden tardar >10 min).
+CACHE_DIR="${SKILLSPECTOR_GUARD_CACHE:-$HOME/.cache/skillspector-guard}"
+CACHE_HOURS="${SKILLSPECTOR_GUARD_CACHE_HOURS:-24}"
+mkdir -p "$CACHE_DIR"
 
-run_scan() {  # $1=url $2=out.json -> 0 ok, 124 timeout, otro = fallo
-  local url="$1" out="$2" pid waited=0
-  skillspector scan "$url" --no-llm -f json >"$out" 2>"$out.err" &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$SCAN_TIMEOUT" ]; then
-      pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
-      sleep 1; pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null
-      return 124
-    fi
+is_fresh() { [ -s "$1" ] && [ -n "$(find "$1" -mmin -$((CACHE_HOURS * 60)) 2>/dev/null)" ]; }
+
+run_scan() {  # $1=url $2=base (sin extensión) -> 0 ok (resultado en $2.json), 124 sigue corriendo, 1 fallo
+  local url="$1" base="$2" pid waited=0
+  is_fresh "$base.json" && return 0
+  pid="$(cat "$base.running" 2>/dev/null)"
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$base.json" "$base.err"
+    # Proceso desacoplado: no hereda stdout del hook, así el hook puede terminar antes que él.
+    nohup sh -c '
+      skillspector scan "$1" --no-llm -f json >"$2.partial" 2>"$2.err"
+      if jq -e ".risk_assessment.score != null" "$2.partial" >/dev/null 2>&1; then mv "$2.partial" "$2.json"; else rm -f "$2.partial"; fi
+      rm -f "$2.running"' sh "$url" "$base" >/dev/null 2>&1 </dev/null &
+    pid=$!
+    echo "$pid" >"$base.running"
+  fi
+  while [ "$waited" -lt "$SCAN_TIMEOUT" ]; do
+    is_fresh "$base.json" && return 0
+    kill -0 "$pid" 2>/dev/null || { is_fresh "$base.json" && return 0; return 1; }
     sleep 1; waited=$((waited + 1))
   done
-  wait "$pid" 2>/dev/null   # SkillSpector sale con 1 cuando encuentra riesgo; no nos fiamos del código
-  jq -e '.risk_assessment.score != null' "$out" >/dev/null 2>&1 && return 0
-  return 1
+  return 124
 }
 
 WARNINGS=""
 BLOCKS=""
-i=0
 while IFS= read -r repo; do
   [ -z "$repo" ] && continue
-  i=$((i + 1))
   url="https://github.com/$repo"
-  out="$TMPD/scan$i.json"
-  run_scan "$url" "$out"; rc=$?
+  base="$CACHE_DIR/$(printf '%s' "$repo" | tr '[:upper:]/' '[:lower:]_')"
+  run_scan "$url" "$base"; rc=$?
+  out="$base.json"
 
   if [ "$rc" -eq 124 ]; then
-    WARNINGS+="⚠️ $url: el escaneo no terminó en ${SCAN_TIMEOUT}s. NO SE REVISÓ."$'\n'
+    WARNINGS+="⚠️ $url: el escaneo no terminó en ${SCAN_TIMEOUT}s. NO SE REVISÓ. Sigue escaneando en segundo plano; vuelve a intentarlo en unos minutos y el guardia usará el resultado."$'\n'
     continue
   elif [ "$rc" -ne 0 ]; then
-    err="$(tail -c 300 "$out.err" 2>/dev/null | tr '\n' ' ')"
+    err="$(tail -c 300 "$base.err" 2>/dev/null | tr '\n' ' ')"
     WARNINGS+="⚠️ $url: el escaneo falló (${err:-sin detalle}). NO SE REVISÓ."$'\n'
     continue
   fi
