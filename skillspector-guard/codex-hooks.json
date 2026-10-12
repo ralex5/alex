@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/skillspector-guard.sh --codex",
+            "timeout": 120,
+            "statusMessage": "SkillSpector revisando repo..."
+          }
+        ]
+      }
+    ]
+  }
+}
