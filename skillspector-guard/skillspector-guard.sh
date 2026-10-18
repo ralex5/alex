@@ -39,6 +39,11 @@ if ! printf '%s' "$CMD" | grep -Eq "$TRIGGER_RE" && ! printf '%s' "$CMD" | grep 
   exit 0   # Todo lo demás pasa sin tocarlo.
 fi
 
+# ¿Instala o ejecuta código (no solo lo descarga)? Entonces "no se revisó" también pregunta/bloquea.
+INSTALL_RE='(npx[[:space:]]+(-y[[:space:]]+|--yes[[:space:]]+)?skills(@[^[:space:]]+)?[[:space:]]+add|claude[[:space:]]+mcp[[:space:]]+add|pip3?[[:space:]]+install|-m[[:space:]]+pip[[:space:]]+install|uv[[:space:]]+tool[[:space:]]+install)'
+IS_INSTALL=0
+if printf '%s' "$CMD" | grep -Eq "$INSTALL_RE" || printf '%s' "$CMD" | grep -Eq "$PIPE_SH_RE"; then IS_INSTALL=1; fi
+
 # ---------- helpers de salida ----------
 emit_warn() {   # deja pasar con aviso visible para el usuario y contexto para el modelo
   jq -cn --arg m "$1" '{systemMessage:$m, hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:$m}}'
@@ -51,6 +56,17 @@ emit_block() {  # HIGH/CRITICAL peligroso
     jq -cn --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"ask", permissionDecisionReason:$r}}'
   fi
   exit 0
+}
+
+emit_unreviewed() {  # $1 = motivo
+  if [ "$IS_INSTALL" = 1 ]; then
+    if [ "$MODE" = "codex" ]; then
+      emit_block "SkillSpector BLOQUEÓ esta instalación porque NO SE PUDO REVISAR (Codex no puede preguntarte):"$'\n'"$1"
+    else
+      emit_block "SkillSpector NO PUDO REVISAR lo que vas a instalar. ¿Quieres instalarlo de todas formas?"$'\n'"$1"
+    fi
+  fi
+  emit_warn "SkillSpector guard:"$'\n'"$1"
 }
 
 # ---------- 2. Sacar los repos de GitHub del comando ----------
@@ -75,11 +91,11 @@ extract_repos() {
 
 REPOS="$(extract_repos "$CMD")"
 if [ -z "$REPOS" ]; then
-  emit_warn "⚠️ SkillSpector guard: este comando instala/clona código externo pero no encontré un link de GitHub. NO SE REVISÓ. Comando: ${CMD:0:200}"
+  emit_unreviewed "⚠️ Este comando instala/clona código externo pero no encontré un link de GitHub. NO SE REVISÓ. Comando: ${CMD:0:200}"
 fi
 
 if ! command -v skillspector >/dev/null 2>&1; then
-  emit_warn "⚠️ SkillSpector guard: skillspector no está instalado o no está en el PATH. NO SE REVISÓ: $(printf '%s' "$REPOS" | tr '\n' ' ')"
+  emit_unreviewed "⚠️ skillspector no está instalado o no está en el PATH. NO SE REVISÓ: $(printf '%s' "$REPOS" | tr '\n' ' ')"
 fi
 
 # ---------- 3. Escanear, con caché y escaneo en segundo plano ----------
@@ -116,6 +132,7 @@ run_scan() {  # $1=url $2=base (sin extensión) -> 0 ok (resultado en $2.json), 
 
 WARNINGS=""
 BLOCKS=""
+UNREVIEWED=""
 while IFS= read -r repo; do
   [ -z "$repo" ] && continue
   url="https://github.com/$repo"
@@ -124,11 +141,11 @@ while IFS= read -r repo; do
   out="$base.json"
 
   if [ "$rc" -eq 124 ]; then
-    WARNINGS+="⚠️ $url: el escaneo no terminó en ${SCAN_TIMEOUT}s. NO SE REVISÓ. Sigue escaneando en segundo plano; vuelve a intentarlo en unos minutos y el guardia usará el resultado."$'\n'
+    UNREVIEWED+="⚠️ $url: el escaneo no terminó en ${SCAN_TIMEOUT}s. NO SE REVISÓ. Sigue escaneando en segundo plano; vuelve a intentarlo en unos minutos y el guardia usará el resultado."$'\n'
     continue
   elif [ "$rc" -ne 0 ]; then
     err="$(tail -c 300 "$base.err" 2>/dev/null | tr '\n' ' ')"
-    WARNINGS+="⚠️ $url: el escaneo falló (${err:-sin detalle}). NO SE REVISÓ."$'\n'
+    UNREVIEWED+="⚠️ $url: el escaneo falló (${err:-sin detalle}). NO SE REVISÓ."$'\n'
     continue
   fi
 
@@ -148,7 +165,7 @@ while IFS= read -r repo; do
     | @json' "$out" 2>/dev/null)"
 
   if [ -z "$summary" ]; then
-    WARNINGS+="⚠️ $url: no pude leer el JSON de SkillSpector. NO SE REVISÓ."$'\n'
+    UNREVIEWED+="⚠️ $url: no pude leer el JSON de SkillSpector. NO SE REVISÓ."$'\n'
     continue
   fi
 
@@ -171,7 +188,7 @@ while IFS= read -r repo; do
     MEDIUM)
       WARNINGS+="⚠️ $url — score $score/100, MEDIUM$partial ($counts):"$'\n'"$top3"$'\n' ;;
     *)
-      WARNINGS+="⚠️ $url: severidad desconocida ($sev). NO SE REVISÓ bien."$'\n' ;;
+      UNREVIEWED+="⚠️ $url: severidad desconocida ($sev). NO SE REVISÓ bien."$'\n' ;;
   esac
 done <<<"$REPOS"
 
@@ -179,7 +196,10 @@ done <<<"$REPOS"
 if [ -n "$BLOCKS" ]; then
   if [ "$MODE" = "codex" ]; then head="SkillSpector BLOQUEÓ este comando (Codex no puede preguntarte). Reporte:"
   else head="SkillSpector encontró riesgo ALTO. ¿Quieres correrlo de todas formas?"; fi
-  emit_block "$head"$'\n'"$BLOCKS${WARNINGS:+$'\n'$WARNINGS}"
+  emit_block "$head"$'\n'"$BLOCKS${UNREVIEWED:+$'\n'$UNREVIEWED}${WARNINGS:+$'\n'$WARNINGS}"
+fi
+if [ -n "$UNREVIEWED" ]; then
+  emit_unreviewed "$UNREVIEWED${WARNINGS:+$'\n'$WARNINGS}"
 fi
 if [ -n "$WARNINGS" ]; then
   emit_warn "SkillSpector guard:"$'\n'"$WARNINGS"

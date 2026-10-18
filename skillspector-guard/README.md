@@ -7,7 +7,8 @@ or `curl|wget … | sh/bash` run.
 - LOW: allow silently · MEDIUM: allow + short warning
 - HIGH/CRITICAL in prompt-injection / supply-chain / data-theft / malware categories:
   Claude Code → `permissionDecision: "ask"`; Codex → `"deny"` (Codex does not support "ask")
-- Scan failure / >100 s / no GitHub link: allow + "NO SE REVISÓ" warning
+- Scan failure / >100 s / no GitHub link: `git clone`/`gh repo clone` allow + "NO SE REVISÓ" warning;
+  install commands (`npx skills add`, `claude mcp add`, `pip/uv install`, `curl|sh`) ask (Claude) / deny (Codex)
 - Slow scans keep running in the background and are cached for 24 h in
   `~/.cache/skillspector-guard/`, so retrying the same command gets the real verdict
 
