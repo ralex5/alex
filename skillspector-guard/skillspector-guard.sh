@@ -10,6 +10,9 @@
 set -u
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# En Windows (Git Bash) jq.exe puede devolver finales \r\n: los quitamos siempre.
+jq() { command jq "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+
 MODE="claude"
 [ "${1:-}" = "--codex" ] && MODE="codex"
 
