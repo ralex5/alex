@@ -22,6 +22,8 @@ foreach ($pkg in @(@{id='Git.Git'; cmd='git'}, @{id='jqlang.jq'; cmd='jq'}, @{id
   if (Get-Command $pkg.cmd -ErrorAction SilentlyContinue) { Say "$($pkg.cmd) ya está instalado" ; continue }
   Say "Instalando $($pkg.id)..."
   winget install --id $pkg.id -e --silent --accept-package-agreements --accept-source-agreements | Out-Null
+  Refresh-Path
+  if (-not (Get-Command $pkg.cmd -ErrorAction SilentlyContinue)) { throw "No se pudo instalar $($pkg.id). Cierra y abre PowerShell y vuelve a correr el instalador." }
 }
 Refresh-Path
 
@@ -32,9 +34,15 @@ Say "Git Bash: $bash"
 
 # ---------- 2. SkillSpector ----------
 if (-not (Get-Command skillspector -ErrorAction SilentlyContinue)) {
-  Say "Instalando SkillSpector (puede tardar unos minutos)..."
-  uv tool install git+https://github.com/NVIDIA/skillspector.git
+  Say "Instalando SkillSpector con Python 3.13 (puede tardar unos minutos)..."
+  # Python 3.13: yara-python (dependencia de SkillSpector) no publica paquetes para Windows
+  # en Python 3.14, y sin ellos intenta compilar y pide Visual C++ Build Tools.
+  uv tool install --force --python 3.13 git+https://github.com/NVIDIA/skillspector.git
+  if ($LASTEXITCODE -ne 0) { throw "Falló la instalación de SkillSpector (arriba está el detalle). Copia el error y pégalo en el chat." }
   Refresh-Path
+}
+if (-not (Get-Command skillspector -ErrorAction SilentlyContinue)) {
+  throw "SkillSpector se instaló pero no aparece en el PATH. Cierra y abre PowerShell y vuelve a correr el instalador."
 }
 $ver = & skillspector --version
 Say "SkillSpector responde: $ver"
